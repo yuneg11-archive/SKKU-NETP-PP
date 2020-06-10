@@ -1,0 +1,6 @@
+2
+TCP 0 3 10000 500000000 0
+UDP 0 3 10002 500000000 1
+
+# flow_num
+# protocol src dst port maxPacketCount startTime

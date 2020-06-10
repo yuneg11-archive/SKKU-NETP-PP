@@ -1,0 +1,9 @@
+4 2 3
+1 2
+0 1 100Mbps 1ms
+1 2 10Mbps 20ms
+2 3 100Mbps 1ms
+
+# node_num switch_num link_num
+# switch IDs ...
+# src dst bandwidth link_delay
