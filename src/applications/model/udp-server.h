@@ -57,6 +57,11 @@ namespace ns3 {
         virtual ~UdpServer();
 
         /**
+         * \return the total bytes received in this server app
+         */
+        uint64_t GetTotalRx() const;
+
+        /**
          * \brief Returns the number of lost packets
          * \return the number of lost packets
          */
@@ -102,6 +107,7 @@ namespace ns3 {
         Ptr<Socket> m_socket; //!< IPv4 Socket
         Ptr<Socket> m_socket6; //!< IPv6 Socket
         uint64_t m_received; //!< Number of received packets
+        uint64_t m_totalRx; //!< Total bytes received
         PacketLossCounter m_lossCounter; //!< Lost packet counter
 
         /// Callbacks for tracing the packet Rx events
@@ -109,6 +115,9 @@ namespace ns3 {
 
         /// Callbacks for tracing the packet Rx events, includes source and destination addresses
         TracedCallback<Ptr<const Packet>, const Address &, const Address &> m_rxTraceWithAddresses;
+
+        // Callbacks for tracing the delay at the packet Rx events
+        TracedCallback<Time> m_delayTrace;
     };
 
 } // namespace ns3

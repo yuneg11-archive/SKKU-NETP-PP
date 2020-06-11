@@ -60,6 +60,9 @@ namespace ns3 {
             .AddTraceSource("RxWithAddresses", "A packet has been received",
                             MakeTraceSourceAccessor(&UdpServer::m_rxTraceWithAddresses),
                             "ns3::Packet::TwoAddressTracedCallback")
+            .AddTraceSource("Delay", "A delay value when packet has been received",
+                            MakeTraceSourceAccessor(&UdpServer::m_delayTrace),
+                            "ns3::Time::TracedCallback")
         ;
         return tid;
     }
@@ -67,10 +70,16 @@ namespace ns3 {
     UdpServer::UdpServer() : m_lossCounter(0) {
         NS_LOG_FUNCTION(this);
         m_received = 0;
-    }
+        m_totalRx = 0;
+   }
 
     UdpServer::~UdpServer() {
         NS_LOG_FUNCTION(this);
+    }
+
+    uint64_t UdpServer::GetTotalRx() const {
+        NS_LOG_FUNCTION(this);
+        return m_totalRx;
     }
 
     uint16_t UdpServer::GetPacketWindowSize() const {
@@ -142,8 +151,11 @@ namespace ns3 {
             m_rxTrace(packet);
             m_rxTraceWithAddresses(packet, from, localAddress);
             if (packet->GetSize() > 0) {
+                m_totalRx += packet->GetSize();
+
                 UdpCcHeader header;
                 packet->RemoveHeader(header);
+                m_delayTrace(Simulator::Now() - header.GetTs());
                 uint32_t currentSequenceNumber = header.GetSeq();
                 if (InetSocketAddress::IsMatchingType(from)) {
                     NS_LOG_INFO("TraceDelay: RX " << packet->GetSize() <<

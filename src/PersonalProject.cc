@@ -48,10 +48,30 @@
 #include "ns3/ipv4-global-routing-helper.h"
 #include "ns3/traffic-control-module.h"
 
+#define LOG_INTERVAL 100
+
 using namespace ns3;
 using namespace std;
 
 NS_LOG_COMPONENT_DEFINE("FinalProject");
+
+void LogTcpThroughput(const int flowNum, Ptr<PacketSink> sink, const uint64_t lastTotalRx) {
+    uint64_t currentTotalRx = sink->GetTotalRx();
+    uint64_t throughput = (currentTotalRx - lastTotalRx) * 8 * (1000 / LOG_INTERVAL) / 1000;
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << " s > " << "thr   " << flowNum << "(tcp) " << throughput << " Kbps");
+    Simulator::Schedule(MilliSeconds(LOG_INTERVAL), &LogTcpThroughput, flowNum, sink, currentTotalRx);
+}
+
+void LogUdpThroughput(const int flowNum, Ptr<UdpServer> server, const uint64_t lastTotalRx) {
+    uint64_t currentTotalRx = server->GetTotalRx();
+    uint64_t throughput = (currentTotalRx - lastTotalRx) * 8 * (1000 / LOG_INTERVAL) / 1000;
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << " s > " << "thr   " << flowNum << "(udp) " << throughput << " Kbps");
+    Simulator::Schedule(MilliSeconds(LOG_INTERVAL), &LogUdpThroughput, flowNum, server, currentTotalRx);
+}
+
+void LogUdpDelay(string flowNum, Time delay) {
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << " s > " << "delay " << flowNum << "(udp) " << delay.GetMilliSeconds() << " ms");
+}
 
 int main(int argc, char *argv[]) {
     /* NOTICE
@@ -185,6 +205,9 @@ int main(int argc, char *argv[]) {
             ftp.SetAttribute("MaxBytes", UintegerValue(maxPacketCount * 1000));
             ApplicationContainer sourceApp = ftp.Install(nodes.Get(src));
             sourceApp.Start(Seconds(startTime));
+
+            // Set up Tcp Troughput Trace
+            Simulator::Schedule(Seconds(startTime) + MilliSeconds(LOG_INTERVAL), &LogTcpThroughput, i, StaticCast<PacketSink>(sinkApp.Get(0)), 0);
         } else {
             // You can add/remove/change parameters of UDP
             UdpServerHelper server(port);
@@ -193,10 +216,16 @@ int main(int argc, char *argv[]) {
 
             UdpClientHelper client(serverAddresses[dst], port);
             client.SetAttribute("MaxPackets", UintegerValue(maxPacketCount));
-            // client.SetAttribute("Interval", TimeValue(interPacketInterval)); Managed by application-level congestion controller
+            client.SetAttribute("Interval", TimeValue(MilliSeconds(1))); // Managed by application-level congestion controller
             client.SetAttribute("PacketSize", UintegerValue(1000)); // Do not modify
             ApplicationContainer clientApp = client.Install(nodes.Get(src));
             clientApp.Start(Seconds(startTime));
+
+            // Set up Udp Troughput Trace
+            Simulator::Schedule(Seconds(startTime) + MilliSeconds(LOG_INTERVAL), &LogUdpThroughput, i, StaticCast<UdpServer>(serverApp.Get(0)), 0);
+
+            // Set up Udp Delay Trace
+            serverApp.Get(0)->TraceConnect("Delay", to_string(i), MakeCallback(&LogUdpDelay));
         }
     }
 
