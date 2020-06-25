@@ -50,6 +50,16 @@ namespace ns3 {
         Time GetTs(void) const;
 
         /**
+         * \return the interval
+         */
+        void SetInterval(Time interval);
+
+        /**
+         * \return the interval
+         */
+        Time GetInterval(void) const;
+
+        /**
          * \brief Get the type ID.
          * \return the object TypeId
          */
@@ -64,6 +74,7 @@ namespace ns3 {
     private:
         uint32_t m_seq; //!< Sequence number
         uint64_t m_ts; //!< Timestamp
+        uint64_t m_interval;
     };
 
 } // namespace ns3

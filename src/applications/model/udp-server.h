@@ -87,6 +87,8 @@ namespace ns3 {
          */
         void SetPacketWindowSize(uint16_t size);
 
+        Time GetDelayAvg(void) const;
+
     protected:
         virtual void DoDispose(void);
 
@@ -118,6 +120,9 @@ namespace ns3 {
 
         // Callbacks for tracing the delay at the packet Rx events
         TracedCallback<Time> m_delayTrace;
+        Time m_lastFeedback;
+        Time m_totalDelay;
+        uint64_t m_totalDelayCount;
     };
 
 } // namespace ns3

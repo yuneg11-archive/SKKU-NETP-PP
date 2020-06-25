@@ -35,6 +35,7 @@
 #include <iostream>
 #include <fstream>
 #include <string>
+#include <list>
 
 #include "ns3/core-module.h"
 #include "ns3/network-module.h"
@@ -58,19 +59,35 @@ NS_LOG_COMPONENT_DEFINE("FinalProject");
 void LogTcpThroughput(const int flowNum, Ptr<PacketSink> sink, const uint64_t lastTotalRx) {
     uint64_t currentTotalRx = sink->GetTotalRx();
     uint64_t throughput = (currentTotalRx - lastTotalRx) * 8 * (1000 / LOG_INTERVAL) / 1000;
-    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << " s > " << "thr   " << flowNum << "(tcp) " << throughput << " Kbps");
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << " s > thr " << flowNum << "(tcp) " << throughput << " Kbps");
     Simulator::Schedule(MilliSeconds(LOG_INTERVAL), &LogTcpThroughput, flowNum, sink, currentTotalRx);
 }
 
 void LogUdpThroughput(const int flowNum, Ptr<UdpServer> server, const uint64_t lastTotalRx) {
     uint64_t currentTotalRx = server->GetTotalRx();
     uint64_t throughput = (currentTotalRx - lastTotalRx) * 8 * (1000 / LOG_INTERVAL) / 1000;
-    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << " s > " << "thr   " << flowNum << "(udp) " << throughput << " Kbps");
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << " s > thr " << flowNum << "(udp) " << throughput << " Kbps");
     Simulator::Schedule(MilliSeconds(LOG_INTERVAL), &LogUdpThroughput, flowNum, server, currentTotalRx);
 }
 
 void LogUdpDelay(string flowNum, Time delay) {
-    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << " s > " << "delay " << flowNum << "(udp) " << delay.GetMilliSeconds() << " ms");
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << " s > delay " << flowNum << "(udp) " << delay.GetMilliSeconds() << " ms");
+}
+
+void LogUdpTrendline(string flowNum, double oldValue, double newValue) {
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << " s > trendline " << flowNum << "(udp) " << newValue);
+}
+
+void LogUdpInterval(string flowNum, Time oldValue, Time newValue) {
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << " s > interval " << flowNum << "(udp) " << newValue.GetMicroSeconds());
+}
+
+void LogUdpLost(string flowNum, uint32_t oldValue, uint32_t newValue) {
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << " s > lost " << flowNum << "(udp) " << newValue);
+}
+
+void LogUdpTargetInterval(string flowNum, Time oldValue, Time newValue) {
+    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << " s > target " << flowNum << "(udp) " << newValue.GetMicroSeconds());
 }
 
 int main(int argc, char *argv[]) {
@@ -114,18 +131,6 @@ int main(int argc, char *argv[]) {
         nodeType[sid] = 1;
     }
 
-    // Set initial parameters for host or switch nodes
-    // You don't have to use this statement.(Use only if necessary)
-    /*
-    for (uint32_t i = 0; i < nodeNum; i++) {
-        if (nodeType[i] == 0) {
-            Host Settings...
-        } else {
-            Swtich Settings...
-        }
-    }
-    */
-
     InternetStackHelper internet;
     internet.Install(nodes);
 
@@ -147,6 +152,8 @@ int main(int argc, char *argv[]) {
         p2p.SetDeviceAttribute("DataRate", StringValue(bandwidth));
         p2p.SetChannelAttribute("Delay", StringValue(linkDelay));
         p2p.SetQueue("ns3::DropTailQueue", "MaxSize", QueueSizeValue(QueueSize("50p")));
+
+        // p2p.EnablePcapAll("Test");
 
         NetDeviceContainer devices = p2p.Install(nodes.Get(src), nodes.Get(dst));
 
@@ -183,6 +190,10 @@ int main(int argc, char *argv[]) {
     flowFile.open(flowFilename.c_str());
     flowFile >> flowNum;
 
+    list< Ptr<Application> > apps;
+    list<Time> appsStart;
+    list<bool> appsType;
+
     for (uint32_t i = 0; i < flowNum; i++) {
         string protocol;
         uint32_t src, dst, port, maxPacketCount;
@@ -207,7 +218,11 @@ int main(int argc, char *argv[]) {
             sourceApp.Start(Seconds(startTime));
 
             // Set up Tcp Troughput Trace
-            Simulator::Schedule(Seconds(startTime) + MilliSeconds(LOG_INTERVAL), &LogTcpThroughput, i, StaticCast<PacketSink>(sinkApp.Get(0)), 0);
+            // Simulator::Schedule(Seconds(startTime) + MilliSeconds(LOG_INTERVAL), &LogTcpThroughput, i, StaticCast<PacketSink>(sinkApp.Get(0)), 0);
+
+            apps.push_back(sinkApp.Get(0));
+            appsStart.push_back(Seconds(startTime));
+            appsType.push_back(false);
         } else {
             // You can add/remove/change parameters of UDP
             UdpServerHelper server(port);
@@ -216,21 +231,53 @@ int main(int argc, char *argv[]) {
 
             UdpClientHelper client(serverAddresses[dst], port);
             client.SetAttribute("MaxPackets", UintegerValue(maxPacketCount));
-            client.SetAttribute("Interval", TimeValue(MilliSeconds(1))); // Managed by application-level congestion controller
+            // client.SetAttribute("Interval", TimeValue(MilliSeconds(1))); // Managed by application-level congestion controller
             client.SetAttribute("PacketSize", UintegerValue(1000)); // Do not modify
             ApplicationContainer clientApp = client.Install(nodes.Get(src));
             clientApp.Start(Seconds(startTime));
 
             // Set up Udp Troughput Trace
-            Simulator::Schedule(Seconds(startTime) + MilliSeconds(LOG_INTERVAL), &LogUdpThroughput, i, StaticCast<UdpServer>(serverApp.Get(0)), 0);
+            // Simulator::Schedule(Seconds(startTime) + MilliSeconds(LOG_INTERVAL), &LogUdpThroughput, i, StaticCast<UdpServer>(serverApp.Get(0)), 0);
 
             // Set up Udp Delay Trace
-            serverApp.Get(0)->TraceConnect("Delay", to_string(i), MakeCallback(&LogUdpDelay));
+            // serverApp.Get(0)->TraceConnect("Delay", to_string(i), MakeCallback(&LogUdpDelay));
+
+            // Set up Udp Trendline Slope Trace
+            // clientApp.Get(0)->TraceConnect("TrendlineSlope", to_string(i), MakeCallback(&LogUdpTrendline));
+            // clientApp.Get(0)->TraceConnect("Interval", to_string(i), MakeCallback(&LogUdpInterval));
+            // clientApp.Get(0)->TraceConnect("Lost", to_string(i), MakeCallback(&LogUdpLost));
+            // clientApp.Get(0)->TraceConnect("TargetInterval", to_string(i), MakeCallback(&LogUdpTargetInterval));
+
+            apps.push_back(serverApp.Get(0));
+            appsStart.push_back(Seconds(startTime));
+            appsType.push_back(true);
         }
     }
 
     Simulator::Stop(Seconds(simulationTime));
     Simulator::Run();
+
+    list< Ptr<Application> >::iterator appsIter = apps.begin();
+    list<Time>::iterator appsStartIter = appsStart.begin();
+    list<bool>::iterator appsTypeIter = appsType.begin();
+    int cnt = 0;
+
+    // Print throughput and delay
+    for ( ; appsIter != apps.end() && appsTypeIter != appsType.end() && appsStartIter != appsStart.end();
+            appsIter++, appsStartIter++, appsTypeIter++, cnt++) {
+        if (*appsTypeIter) {
+            // UDP
+            uint64_t totalRx = (StaticCast<UdpServer>(*appsIter))->GetTotalRx();
+            Time duration = Seconds(simulationTime) - (*appsStartIter);
+            NS_LOG_UNCOND("(UDP)" << cnt << ": Throughput " << (totalRx * 8) / (duration.GetSeconds() * 1000) << " Kbps");
+            NS_LOG_UNCOND("(UDP)" << cnt << ": Delay      " << (StaticCast<UdpServer>(*appsIter))->GetDelayAvg().GetMilliSeconds() << " ms");
+        } else {
+            // TCP
+            uint64_t totalRx = (StaticCast<PacketSink>(*appsIter))->GetTotalRx();
+            Time duration = Seconds(simulationTime) - (*appsStartIter);
+            NS_LOG_UNCOND("(TCP)" << cnt << ": Throughput " << (totalRx * 8) / (duration.GetSeconds() * 1000) << " Kbps");
+        }
+    }
 
     Simulator::Destroy();
     return 0;

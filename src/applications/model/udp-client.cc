@@ -32,6 +32,18 @@
 #include "udp-client.h"
 #include <cstdlib>
 #include <cstdio>
+#include <ostream>
+
+#define SMOOTH(x, y, xr, yr) ((((x) * (xr)) + ((y) * (yr))) / ((xr) + (yr)))
+
+// Receiver feedback message structure
+typedef union {
+    uint8_t buf[12];
+    struct {
+        int64_t recvTime;
+        uint32_t lost;
+    };
+} message_t;
 
 namespace ns3 {
 
@@ -48,10 +60,6 @@ namespace ns3 {
                           UintegerValue(100),
                           MakeUintegerAccessor(&UdpClient::m_count),
                           MakeUintegerChecker<uint32_t>())
-            .AddAttribute("Interval",
-                          "The time to wait between packets", TimeValue(Seconds(1.0)),
-                          MakeTimeAccessor(&UdpClient::m_interval),
-                          MakeTimeChecker())
             .AddAttribute("RemoteAddress",
                           "The destination Address of the outbound packets",
                           AddressValue(),
@@ -66,6 +74,18 @@ namespace ns3 {
                           UintegerValue(1024),
                           MakeUintegerAccessor(&UdpClient::m_size),
                           MakeUintegerChecker<uint32_t>(12,65507))
+            .AddTraceSource("TrendlineSlope", "A trendline slope when packet has been received",
+                            MakeTraceSourceAccessor(&UdpClient::m_trendlineSlope),
+                            "ns3::TracedValueCallback::Double")
+            .AddTraceSource("Interval", "The time to wait between packets",
+                            MakeTraceSourceAccessor(&UdpClient::m_interval),
+                            "ns3::TracedValueCallback::Time")
+            .AddTraceSource("Lost", "The number of lost packets when packet has been received",
+                            MakeTraceSourceAccessor(&UdpClient::m_lostTrace),
+                            "ns3::TracedValueCallback::Uint32")
+            .AddTraceSource("TargetInterval", "The number of lost packets when packet has been received",
+                            MakeTraceSourceAccessor(&UdpClient::m_targetInterval),
+                            "ns3::TracedValueCallback::Time")
         ;
         return tid;
     }
@@ -75,6 +95,15 @@ namespace ns3 {
         m_sent = 0;
         m_socket = 0;
         m_sendEvent = EventId();
+        m_interval = MicroSeconds(500);
+        m_trendlineSlope = 0;
+        m_delayMin = MilliSeconds(1000);
+        m_delayMax = MilliSeconds(0);
+        m_targetInterval = MilliSeconds(1000);
+        m_delayMinInterval = MicroSeconds(10000);
+        m_delayMaxInterval = MicroSeconds(200);
+        m_totalLost = 0;
+        m_lostTrace = 0;
     }
 
     UdpClient::~UdpClient() {
@@ -128,7 +157,7 @@ namespace ns3 {
             }
         }
 
-        m_socket->SetRecvCallback(MakeNullCallback<void, Ptr<Socket> >());
+        m_socket->SetRecvCallback(MakeCallback(&UdpClient::HandleRead, this));
         m_socket->SetAllowBroadcast(true);
         m_sendEvent = Simulator::Schedule(Seconds(0.0), &UdpClient::Send, this);
     }
@@ -136,6 +165,10 @@ namespace ns3 {
     void UdpClient::StopApplication(void) {
         NS_LOG_FUNCTION(this);
         Simulator::Cancel(m_sendEvent);
+
+        if (m_socket != 0) {
+            m_socket->SetRecvCallback(MakeNullCallback<void, Ptr<Socket> >());
+        }
     }
 
     void UdpClient::Send(void) {
@@ -143,7 +176,8 @@ namespace ns3 {
         NS_ASSERT(m_sendEvent.IsExpired());
         UdpCcHeader header;
         header.SetSeq(m_sent);
-        Ptr<Packet> p = Create<Packet>(m_size-(8+4)); // 8+4 : the size of the header
+        header.SetInterval(m_interval);
+        Ptr<Packet> p = Create<Packet>(m_size - header.GetSerializedSize());
         p->AddHeader(header);
 
         std::stringstream peerAddressStringStream;
@@ -166,6 +200,171 @@ namespace ns3 {
 
         if (m_sent < m_count) {
             m_sendEvent = Simulator::Schedule(m_interval, &UdpClient::Send, this);
+        }
+    }
+
+    void UdpClient::HandleRead(Ptr<Socket> socket) {
+        NS_LOG_FUNCTION(this << socket);
+        Ptr<Packet> packet;
+        Address from;
+        Address localAddress;
+        while ((packet = socket->RecvFrom(from))) {
+            message_t msg;
+            UdpCcHeader header;
+            packet->RemoveHeader(header);
+            packet->CopyData(msg.buf, 12);
+            ControlSend(msg.lost, header.GetTs(), Time(msg.recvTime), header.GetInterval());
+
+            if (InetSocketAddress::IsMatchingType(from)) {
+                NS_LOG_INFO("At time " << Simulator::Now().GetSeconds() << "s client received " << packet->GetSize() <<
+                            " bytes from " <<InetSocketAddress::ConvertFrom(from).GetIpv4() <<
+                            " port " << InetSocketAddress::ConvertFrom(from).GetPort());
+            } else if (Inet6SocketAddress::IsMatchingType(from)) {
+                NS_LOG_INFO("At time " << Simulator::Now().GetSeconds() << "s client received " << packet->GetSize() <<
+                            " bytes from " << Inet6SocketAddress::ConvertFrom(from).GetIpv6() <<
+                            " port " << Inet6SocketAddress::ConvertFrom(from).GetPort());
+            }
+        }
+    }
+
+    void UdpClient::UpdateInterval(Time newInterval) {
+        // Change send interval when new interval is within lower & upper bound
+        if (MicroSeconds(200) <= newInterval && newInterval <= MicroSeconds(10000)) {
+            m_interval = SMOOTH(m_interval, newInterval, 9, 1);
+        }
+    }
+
+    void UdpClient::ControlSend(uint32_t lost, Time sendTime, Time recvTime, Time sendInterval) {
+        m_sendTimeList.push_back(sendTime);
+        m_recvTimeList.push_back(recvTime);
+
+        // Calculate packet loss
+        m_lostTrace = lost - m_totalLost;
+        m_totalLost = lost;
+
+        // Calculate moving send interval when the packet was sent
+        m_recvIntervalAvg = SMOOTH(m_recvIntervalAvg, sendInterval, 9, 1);
+
+        if (m_sendTimeList.size() >= LIST_SIZE_LOWER_LIMIT) {
+            if (m_sendTimeList.size() > LIST_SIZE_UPPER_LIMIT) {
+                // Adjust(fix) calculation window
+                m_sendTimeList.pop_front();
+                m_recvTimeList.pop_front();
+            }
+
+            // Calculate trendline slope and current delay(smoothed)
+            std::list<Time>::iterator sendIter = m_sendTimeList.begin();
+            std::list<Time>::iterator recvIter = m_recvTimeList.begin();
+
+            Time prevSendTime(*sendIter), prevRecvTime(*recvIter);
+            sendIter++, recvIter++;
+            Time baseSendTime(*sendIter), baseRecvTime(*recvIter);
+
+            Time smoothedDelay(prevRecvTime - prevSendTime);
+            Time accumulatedDelayDelta(0);
+            Time smoothedDelayDelta(0);
+
+            std::list<Time> x, y;
+            Time xSum(0), ySum(0);
+
+            for ( ; sendIter != m_sendTimeList.end() && recvIter != m_recvTimeList.end(); sendIter++, recvIter++) {
+                smoothedDelay = SMOOTH(smoothedDelay, *recvIter - *sendIter, 9, 1);
+                accumulatedDelayDelta += ((*recvIter - prevRecvTime) - (*sendIter - prevSendTime));
+                smoothedDelayDelta = SMOOTH(smoothedDelayDelta, accumulatedDelayDelta, 9, 1);
+
+                x.push_back(*recvIter - baseRecvTime);
+                y.push_back(smoothedDelayDelta);
+
+                xSum += *recvIter - baseRecvTime;
+                ySum += smoothedDelayDelta;
+
+                prevSendTime = *sendIter;
+                prevRecvTime = *recvIter;
+            }
+
+            Time xAvg(xSum / x.size());
+            Time yAvg(ySum / y.size());
+
+            double numerator = 0.0;
+            double denominator = 0.0;
+            std::list<Time>::iterator xIter = x.begin();
+            std::list<Time>::iterator yIter = y.begin();
+
+            for (; xIter != x.end() && yIter != y.end(); xIter++, yIter++) {
+                numerator += ((*xIter - xAvg) * (*yIter - yAvg)).GetDouble();
+                denominator += ((*xIter - xAvg) * (*xIter - xAvg)).GetDouble();
+            }
+            m_trendlineSlope = numerator / denominator;
+
+            // Calculate delay range and average delay
+            if (m_delayMin >= smoothedDelay) {
+                m_delayMin = smoothedDelay;
+            }
+            if (m_delayMax <= smoothedDelay) {
+                m_delayMax = smoothedDelay;
+            }
+            Time delayAvg = (m_delayMax + m_delayMin) / 2;
+
+            // Calculate interval range and target interval
+            if (smoothedDelay <= m_delayMin * 100 / 97 && m_delayMinInterval > m_recvIntervalAvg) {
+                m_delayMinInterval = SMOOTH(m_delayMinInterval, m_recvIntervalAvg, 95, 5);
+            }
+            if ((smoothedDelay >= m_delayMax * 97 / 100 && m_delayMaxInterval < m_recvIntervalAvg) || m_lostTrace.Get() == 0) {
+                m_delayMaxInterval = SMOOTH(m_delayMaxInterval, m_recvIntervalAvg, 9, 1);
+            }
+            m_targetInterval = (m_delayMaxInterval + m_delayMinInterval) / 2;
+
+            // Loss-based and Delay-based control
+            if (m_lostTrace.Get() > 0) {
+                // Lost packets -> Increase interval = Decrease throughput
+                if (m_lostTrace.Get() > 10) {
+                    UpdateInterval(m_interval * 100 / 70);
+                } else {
+                    UpdateInterval(m_interval * 100 / (100 - 3 * m_lostTrace.Get()));
+                }
+            } else if (smoothedDelay <= m_delayMin * 100 / 95) {
+                // Too low congestion -> Decrease interval = Increase throughput
+                UpdateInterval(m_interval * 95 / 100);
+            } else if (smoothedDelay > m_delayMax * 95 / 100) {
+                // Too high congestion -> Increase interval = Decrease throughput
+                UpdateInterval(m_interval * 100 / 85);
+            } else {
+                if (smoothedDelay > delayAvg * 100 / 80) {
+                    // Above target delay
+                    // Delay increases -> Increase interval = Decrease throughput
+                    if (m_trendlineSlope > 0.05) {
+                        UpdateInterval(m_interval * 100 / 95);
+                    } else if (m_trendlineSlope >= -0.01) {
+                        UpdateInterval(m_interval * 100 / 97);
+                    }
+                    // Delay decreases -> Decrease interval = Increase throughput
+                    if (m_trendlineSlope < -0.10) {
+                        UpdateInterval(m_interval * 96 / 100);
+                    } else if (m_trendlineSlope < -0.05) {
+                        UpdateInterval(m_interval * 98 / 100);
+                    }
+                } else if (smoothedDelay < delayAvg * 80 / 100) {
+                    // Below target delay
+                    // Delay increases -> Increase interval = Decrease throughput
+                    if (m_trendlineSlope > 0.10) {
+                        UpdateInterval(m_interval * 100 / 95);
+                    } else if (m_trendlineSlope > 0.05) {
+                        UpdateInterval(m_interval * 100 / 97);
+                    }
+                    // Delay decreases -> Decrease interval = Increase throughput
+                    if (m_trendlineSlope < -0.05) {
+                        UpdateInterval(m_interval * 96 / 100);
+                    } else if (m_trendlineSlope <= 0.01) {
+                        UpdateInterval(m_interval * 98 / 100);
+                    }
+                } else {
+                    // Within target delay -> Hold interval = Hold throughput
+                    UpdateInterval(SMOOTH(m_interval, ((m_delayMaxInterval + m_delayMinInterval) / 2) * 100 / 97, 5, 5));
+                }
+            }
+        } else {
+            // Bootstrap stage -> Decrease interval = Increase throughput
+            UpdateInterval(m_interval * 75 / 100);
         }
     }
 

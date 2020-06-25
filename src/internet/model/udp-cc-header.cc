@@ -30,7 +30,8 @@ namespace ns3 {
     NS_OBJECT_ENSURE_REGISTERED(UdpCcHeader);
 
     UdpCcHeader::UdpCcHeader() : m_seq(0),
-                                 m_ts (Simulator::Now().GetTimeStep()) {
+                                 m_ts(Simulator::Now().GetTimeStep()),
+                                 m_interval(0) {
         NS_LOG_FUNCTION(this);
     }
 
@@ -47,6 +48,15 @@ namespace ns3 {
     Time UdpCcHeader::GetTs(void) const {
         NS_LOG_FUNCTION(this);
         return TimeStep(m_ts);
+    }
+
+    void UdpCcHeader::SetInterval(Time interval) {
+        int64_t interval_value = interval.GetInteger();
+        m_interval = *((uint64_t*)&interval_value);
+    }
+
+    Time UdpCcHeader::GetInterval(void) const {
+        return Time(*((int64_t*)&m_interval));
     }
 
     TypeId UdpCcHeader::GetTypeId(void) {
@@ -69,7 +79,7 @@ namespace ns3 {
 
     uint32_t UdpCcHeader::GetSerializedSize(void) const {
         NS_LOG_FUNCTION(this);
-        return 4 + 8;
+        return 4 + 8 + 8;
     }
 
     void UdpCcHeader::Serialize(Buffer::Iterator start) const {
@@ -77,6 +87,7 @@ namespace ns3 {
         Buffer::Iterator i = start;
         i.WriteHtonU32(m_seq);
         i.WriteHtonU64(m_ts);
+        i.WriteHtonU64(m_interval);
     }
 
     uint32_t UdpCcHeader::Deserialize(Buffer::Iterator start) {
@@ -84,6 +95,7 @@ namespace ns3 {
         Buffer::Iterator i = start;
         m_seq = i.ReadNtohU32();
         m_ts = i.ReadNtohU64();
+        m_interval = i.ReadNtohU64();
         return GetSerializedSize();
     }
 

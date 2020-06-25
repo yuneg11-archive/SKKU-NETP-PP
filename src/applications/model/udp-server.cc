@@ -33,6 +33,14 @@
 #include "packet-loss-counter.h"
 #include "udp-server.h"
 
+typedef union {
+    uint8_t buf[12];
+    struct {
+        int64_t recvTime;
+        uint32_t lost;
+    };
+} message_t;
+
 namespace ns3 {
 
     NS_LOG_COMPONENT_DEFINE("UdpServer");
@@ -71,6 +79,9 @@ namespace ns3 {
         NS_LOG_FUNCTION(this);
         m_received = 0;
         m_totalRx = 0;
+        m_lastFeedback = Time(0);
+        m_totalDelay = Time(0);
+        m_totalDelayCount = 0;
    }
 
     UdpServer::~UdpServer() {
@@ -100,6 +111,10 @@ namespace ns3 {
     uint64_t UdpServer::GetReceived(void) const {
         NS_LOG_FUNCTION(this);
         return m_received;
+    }
+
+    Time UdpServer::GetDelayAvg(void) const {
+        return m_totalDelay / m_totalDelayCount;
     }
 
     void UdpServer::DoDispose(void) {
@@ -156,6 +171,9 @@ namespace ns3 {
                 UdpCcHeader header;
                 packet->RemoveHeader(header);
                 m_delayTrace(Simulator::Now() - header.GetTs());
+                m_totalDelay += (Simulator::Now() - header.GetTs());
+                m_totalDelayCount++;
+
                 uint32_t currentSequenceNumber = header.GetSeq();
                 if (InetSocketAddress::IsMatchingType(from)) {
                     NS_LOG_INFO("TraceDelay: RX " << packet->GetSize() <<
@@ -177,6 +195,18 @@ namespace ns3 {
 
                 m_lossCounter.NotifyReceived(currentSequenceNumber);
                 m_received++;
+
+                // Feedback every 5 ms
+                if (Simulator::Now() - m_lastFeedback > MilliSeconds(5)) {
+                    m_lastFeedback = Simulator::Now();
+                    message_t msg;
+                    msg.recvTime = Simulator::Now().GetInteger();
+                    msg.lost = GetLost();
+
+                    Ptr<Packet> feedbackPacket = Create<Packet>(msg.buf, 12);
+                    feedbackPacket->AddHeader(header);
+                    socket->SendTo(feedbackPacket, 0, from);
+                }
             }
         }
     }
